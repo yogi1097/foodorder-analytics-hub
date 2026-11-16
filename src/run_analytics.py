@@ -6,14 +6,26 @@ import mysql.connector
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Refresh the analytics warehouse and log the run."
+        description="Run and log a warehouse load."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["full", "incremental"],
+        default="full",
+        help="Choose full refresh or incremental order loading.",
     )
     parser.add_argument(
         "--simulate-failure",
         action="store_true",
-        help="Test failure logging before refreshing the warehouse.",
+        help="Test failure logging before loading warehouse data.",
     )
     args = parser.parse_args()
+
+    procedures = {
+        "full": "refresh_analytics",
+        "incremental": "load_orders_incremental",
+    }
+    procedure = procedures[args.mode]
 
     connection = None
     cursor = None
@@ -22,8 +34,6 @@ def main():
     try:
         password = getpass("Enter your local MySQL root password: ")
 
-        # Logs are saved independently.
-        # The refresh procedure manages its own transaction.
         connection = mysql.connector.connect(
             host="127.0.0.1",
             port=3306,
@@ -44,17 +54,14 @@ def main():
             )
             VALUES (%s, CURRENT_TIMESTAMP(6), %s)
             """,
-            ("refresh_analytics", "RUNNING"),
+            (procedure, "RUNNING"),
         )
 
         run_id = cursor.lastrowid
-        print(f"Started pipeline run {run_id}")
+        print(f"Started pipeline run {run_id}: {args.mode}")
 
         cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM foodorder_source.orders
-            """
+            "SELECT COUNT(*) FROM foodorder_source.orders"
         )
         source_count = cursor.fetchone()[0]
 
@@ -67,21 +74,27 @@ def main():
             (source_count, run_id),
         )
 
-        # Controlled test: fail before changing warehouse data.
         if args.simulate_failure:
             raise RuntimeError(
-                "Intentional test failure before warehouse refresh."
+                "Intentional test failure before warehouse load."
             )
 
-        cursor.execute("CALL refresh_analytics()")
+        # Procedure name comes only from the fixed mapping above.
+        cursor.execute(f"CALL {procedure}()")
 
-        # Consume any results returned by the procedure.
-        if cursor.with_rows:
-            cursor.fetchall()
+        procedure_results = []
 
-        while cursor.nextset():
+        while True:
             if cursor.with_rows:
-                cursor.fetchall()
+                column_names = cursor.column_names
+
+                for row in cursor.fetchall():
+                    procedure_results.append(
+                        dict(zip(column_names, row))
+                    )
+
+            if not cursor.nextset():
+                break
 
         cursor.execute("SELECT COUNT(*) FROM fact_orders")
         warehouse_count = cursor.fetchone()[0]
@@ -100,6 +113,10 @@ def main():
         print(f"Run {run_id}: SUCCESS")
         print(f"Source orders: {source_count:,}")
         print(f"Warehouse orders: {warehouse_count:,}")
+
+        for result in procedure_results:
+            for name, value in result.items():
+                print(f"{name}: {value}")
 
     except Exception as error:
         if connection is not None and run_id is not None:
