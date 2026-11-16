@@ -256,3 +256,10 @@ adaptations, and validation results.
 ## Author
 
 Yogesh Kumar
+
+## Report Preview
+
+![FoodOrder Analytics Hub overview](screenshots/overview.png)
+
+See [Power BI report instructions](docs/powerbi-report.md)
+for metric definitions, verified results, and refresh steps.
